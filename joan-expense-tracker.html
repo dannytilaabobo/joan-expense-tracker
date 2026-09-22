@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>My Expenses</title>
+<link id="manifestLink" rel="manifest">
+<link id="appleIcon" rel="apple-touch-icon">
+<meta name="theme-color" content="#6d28d9">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+
+<!-- ============================================================
+     Joan's Personal Expense & Fund Tracker
+     - Single-file PWA (no build step), Firebase Firestore backend
+     - Works offline (Firestore persistence) + auto-syncs when back online
+     - PIN-gated, private to Joan only (PIN itself lives in Firestore
+       so it works the same way on any device she opens this on)
+     - Deploy: upload this exact file to GitHub Pages / Netlify,
+       same workflow used for the pharmacy trackers.
+     ============================================================ -->
+
+<style>
+  :root{
+    --green:#6d28d9;
+    --green-light:#9d5cff;
+    --green-dark:#2e1065;
+    --gold:#d4af6a;
+    --bg:#f8f6fc;
+    --card:#ffffff;
+    --text:#241b33;
+    --muted:#79708c;
+    --red:#c0392b;
+    --border:#e9e3f5;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  *{box-sizing:inherit; -webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--text);
+    touch-action:manipulation;
+    -webkit-font-smoothing:antialiased;
+  }
+  #app{max-width:480px; margin:0 auto; min-height:100%; display:flex; flex-direction:column; padding-bottom:90px;}
+
+  /* ---------- Header ---------- */
+  header{
+    background:linear-gradient(135deg,var(--green),var(--green-light));
+    color:#fff; padding:18px 16px 22px; position:sticky; top:0; z-index:5;
+    padding-top:calc(18px + env(safe-area-inset-top,0px));
+  }
+  header .top-row{display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;}
+  header .title{font-size:15px; font-weight:600; opacity:.9;}
+  #statusBadge{font-size:11px; padding:3px 9px; border-radius:20px; background:rgba(255,255,255,.18);}
+  #statusBadge.offline{background:#c0392b;}
+  .balance-label{font-size:12px; opacity:.85;}
+  .balance-amount{font-size:32px; font-weight:700; margin-top:2px; color:var(--gold); text-shadow:0 1px 8px rgba(0,0,0,.12);}
+  .summary-row{display:flex; gap:8px; margin-top:14px;}
+  .summary-chip{flex:1; background:rgba(255,255,255,.15); border-radius:10px; padding:8px 10px;}
+  .summary-chip .label{font-size:10px; opacity:.85;}
+  .summary-chip .val{font-size:15px; font-weight:700; margin-top:2px;}
+
+  /* ---------- Content ---------- */
+  main{padding:14px 14px 0;}
+  .section-title{font-size:13px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; margin:14px 2px 8px;}
+  .card{background:var(--card); border-radius:14px; padding:12px 14px; box-shadow:0 1px 3px rgba(0,0,0,.05); border:1px solid var(--border);}
+
+  /* category breakdown */
+  .cat-row{display:flex; align-items:center; gap:8px; padding:6px 0;}
+  .cat-row .icon{font-size:18px; width:24px; text-align:center;}
+  .cat-row .name{flex:1; font-size:13px;}
+  .cat-row .amt{font-size:13px; font-weight:600;}
+  .bar-bg{height:6px; background:var(--border); border-radius:4px; margin-top:4px; overflow:hidden;}
+  .bar-fill{height:100%; background:var(--green-light); border-radius:4px;}
+
+  /* entries list */
+  .entry{display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--border);}
+  .entry:last-child{border-bottom:none;}
+  .entry .icon{font-size:20px; width:34px; height:34px; border-radius:10px; background:var(--bg); display:flex; align-items:center; justify-content:center;}
+  .entry .info{flex:1; min-width:0;}
+  .entry .info .cat{font-size:13.5px; font-weight:600;}
+  .entry .info .note{font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .entry .badge{font-size:10px; background:var(--border); color:var(--muted); padding:2px 6px; border-radius:20px; margin-left:6px;}
+  .entry .amt{font-size:14px; font-weight:700; white-space:nowrap;}
+  .entry .amt.income{color:var(--green);}
+  .entry .amt.expense{color:var(--red);}
+  .entry .receipt-thumb{width:34px; height:34px; border-radius:8px; object-fit:cover; margin-left:6px; cursor:pointer;}
+  .date-heading{font-size:12px; font-weight:700; color:var(--muted); margin:14px 2px 4px;}
+  .empty-state{text-align:center; color:var(--muted); font-size:13px; padding:30px 10px;}
+
+  /* ---------- Floating Add Button ---------- */
+  #fab{
+    position:fixed; right:20px; bottom:calc(22px + env(safe-area-inset-bottom,0px));
+    width:60px; height:60px; border-radius:50%; background:var(--green);
+    color:#fff; font-size:30px; display:flex; align-items:center; justify-content:center;
+    box-shadow:0 6px 16px rgba(45,106,79,.4); border:none; z-index:10; cursor:pointer;
+  }
+  #fab:active{transform:scale(.94);}
+
+  /* ---------- Modal / Bottom Sheet ---------- */
+  .overlay{position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:20; display:none;}
+  .overlay.show{display:block;}
+  .sheet{
+    position:fixed; left:0; right:0; bottom:0; background:#fff; z-index:21;
+    border-radius:18px 18px 0 0; padding:16px 16px calc(20px + env(safe-area-inset-bottom,0px));
+    max-height:88vh; overflow-y:auto; transform:translateY(100%); transition:transform .25s ease;
+    max-width:480px; margin:0 auto;
+  }
+  .sheet.show{transform:translateY(0);}
+  .sheet h2{font-size:17px; margin:0 0 14px;}
+  .sheet-handle{width:40px; height:4px; background:var(--border); border-radius:4px; margin:0 auto 12px;}
+  .type-toggle{display:flex; background:var(--bg); border-radius:10px; padding:4px; margin-bottom:14px;}
+  .type-toggle button{flex:1; border:none; background:none; padding:9px; border-radius:8px; font-size:14px; font-weight:600; color:var(--muted);}
+  .type-toggle button.active.expense{background:var(--red); color:#fff;}
+  .type-toggle button.active.income{background:var(--green); color:#fff;}
+  label{display:block; font-size:12px; font-weight:600; color:var(--muted); margin:12px 0 5px;}
+  input,select,textarea{
+    width:100%; padding:11px 12px; border:1px solid var(--border); border-radius:10px;
+    font-size:15px; font-family:inherit; background:#fafafa;
+  }
+  #amountInput{font-size:24px; font-weight:700; text-align:center;}
+  .cat-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:4px;}
+  .cat-btn{border:1.5px solid var(--border); background:#fff; border-radius:12px; padding:10px 4px; text-align:center; font-size:11px; color:var(--text);}
+  .cat-btn .ic{font-size:20px; display:block; margin-bottom:3px;}
+  .cat-btn.selected{border-color:var(--green); background:#f1e9fd; color:var(--green);}
+  #receiptPreview{margin-top:8px; max-width:100%; border-radius:10px; display:none;}
+  .btn-primary{width:100%; background:var(--green); color:#fff; border:none; padding:14px; border-radius:12px; font-size:15px; font-weight:700; margin-top:18px;}
+  .btn-primary:disabled{opacity:.6;}
+  .btn-text{width:100%; background:none; border:none; color:var(--muted); padding:10px; font-size:13px; margin-top:4px;}
+  .hint{font-size:11px; color:var(--muted); margin-top:5px;}
+
+  /* ---------- PIN screen ---------- */
+  #pinScreen{
+    position:fixed; inset:0; background:linear-gradient(160deg,var(--green-light),var(--green) 45%,var(--green-dark));
+    z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#fff;
+  }
+  #pinScreen .lock-title{font-size:16px; font-weight:600; margin-bottom:4px; letter-spacing:.02em;}
+  #pinScreen .lock-sub{font-size:12px; opacity:.8; margin-bottom:20px;}
+  .pin-dots{display:flex; gap:14px; margin-bottom:26px;}
+  .pin-dot{width:14px; height:14px; border-radius:50%; border:2px solid #fff; background:transparent;}
+  .pin-dot.filled{background:var(--gold); border-color:var(--gold);}
+  .keypad{display:grid; grid-template-columns:repeat(3,68px); gap:14px;}
+  .keypad button{
+    width:68px; height:68px; border-radius:50%; border:1px solid rgba(255,255,255,.35);
+    background:rgba(255,255,255,.08); color:#fff; font-size:22px; font-weight:600;
+    transition:none; touch-action:manipulation;
+  }
+  .keypad button:active{background:rgba(212,175,106,.28);}
+  .keypad button.ghost{border:none; background:none;}
+  #pinError{color:#ffd3cc; font-size:12px; height:16px; margin-top:8px;}
+
+  #toast{
+    position:fixed; left:50%; bottom:100px; transform:translateX(-50%);
+    background:#1b1f1d; color:#fff; padding:10px 18px; border-radius:30px; font-size:13px;
+    opacity:0; transition:opacity .25s; z-index:200; pointer-events:none; white-space:nowrap;
+  }
+  #toast.show{opacity:1;}
+</style>
+</head>
+<body>
+
+<!-- ================= PIN LOCK ================= -->
+<div id="pinScreen">
+  <div class="lock-title" id="pinTitle">Enter PIN</div>
+  <div class="lock-sub" id="pinSub">My Expenses</div>
+  <div class="pin-dots" id="pinDots"></div>
+  <div id="pinError"></div>
+  <div class="keypad" id="keypad"></div>
+</div>
+
+<div id="app" style="display:none;">
+  <header>
+    <div class="top-row">
+      <div class="title">My Expenses</div>
+      <div id="statusBadge">Online</div>
+    </div>
+    <div class="balance-label">Fund Balance</div>
+    <div class="balance-amount" id="balanceAmount">₱0.00</div>
+    <div class="summary-row">
+      <div class="summary-chip"><div class="label">Today</div><div class="val" id="todayTotal">₱0</div></div>
+      <div class="summary-chip"><div class="label">This Week</div><div class="val" id="weekTotal">₱0</div></div>
+      <div class="summary-chip"><div class="label">This Month</div><div class="val" id="monthTotal">₱0</div></div>
+    </div>
+  </header>
+
+  <main>
+    <div class="section-title">This Month by Category</div>
+    <div class="card" id="categoryBreakdown"><div class="empty-state">No expenses yet this month.</div></div>
+
+    <div class="section-title">Recent Entries</div>
+    <div class="card" id="entriesList"><div class="empty-state">No entries yet. Tap + to add your first one.</div></div>
+  </main>
+</div>
+
+<button id="fab">+</button>
+
+<div class="overlay" id="overlay"></div>
+<div class="sheet" id="sheet">
+  <div class="sheet-handle"></div>
+  <h2>Add Entry</h2>
+  <div class="type-toggle">
+    <button type="button" id="typeExpense" class="active expense">Expense</button>
+    <button type="button" id="typeIncome" class="income">Income</button>
+  </div>
+
+  <label>Amount</label>
+  <input id="amountInput" type="number" inputmode="decimal" placeholder="0.00">
+
+  <div id="categoryField">
+    <label>Category</label>
+    <div class="cat-grid" id="catGrid"></div>
+  </div>
+
+  <div id="frequencyField" style="display:none;">
+    <label>Billing Frequency</label>
+    <select id="frequencySelect">
+      <option value="onetime">One-time</option>
+      <option value="monthly">Monthly</option>
+      <option value="quarterly">Quarterly</option>
+      <option value="semiannual">Semi-Annual</option>
+      <option value="annual">Annual</option>
+    </select>
+  </div>
+
+  <label>Date</label>
+  <input id="dateInput" type="date">
+
+  <label>Note (optional)</label>
+  <input id="noteInput" type="text" placeholder="e.g. Meralco bill, Palengke...">
+
+  <label>Receipt Photo (optional)</label>
+  <input id="receiptInput" type="file" accept="image/*">
+  <img id="receiptPreview">
+  <div class="hint" id="receiptHint"></div>
+
+  <button class="btn-primary" id="saveBtn">Save Entry</button>
+  <button class="btn-text" id="cancelBtn">Cancel</button>
+</div>
+
+<div id="toast"></div>
+
+<!-- ============ Firebase (Spark free tier) ============ -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js" crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js" crossorigin="anonymous"></script>
+
+<script>
+/* ==========================================================
+   1. FIREBASE CONFIG
+   -----------------------------------------------------------
+   Replace with YOUR Firebase project's web config
+   (Firebase Console → Project Settings → General → Your apps → SDK setup).
+   Free "Spark" plan is enough. Same project you used for the
+   pharmacy trackers works fine too — just point it at a new
+   collection name (see COLLECTION below) so data never mixes.
+   ========================================================== */
+const firebaseConfig = {
+  apiKey: "AIzaSyDR5LCZiZzIdocyXH83WGdK9eYRT59WbVs",
+  authDomain: "joan-expenses.firebaseapp.com",
+  projectId: "joan-expenses",
+  storageBucket: "joan-expenses.firebasestorage.app",
+  messagingSenderId: "423442725162",
+  appId: "1:423442725162:web:90e2e3343bbf4b7428c653"
+};
+const COLLECTION = "joan_expense_entries";     // Firestore collection for all income/expense docs
+const SETTINGS_DOC = "joan_expense_settings/pin"; // where the PIN itself is stored
+
+// -------- Clear setup warning instead of a blank/opaque error --------
+// If the config below still has placeholder values, or the file was
+// opened directly (file://) instead of hosted on GitHub Pages/Netlify,
+// Firebase can't connect and the PIN screen would otherwise just show
+// a generic "Script error." with no explanation. Catch that up front.
+function showSetupWarning(msg){
+  document.getElementById("pinTitle").textContent = "Setup needed";
+  document.getElementById("pinSub").textContent = "";
+  document.getElementById("pinError").innerHTML = msg;
+  document.getElementById("pinDots").style.display = "none";
+  document.getElementById("keypad").style.display = "none";
+}
+
+let db = null;
+const isPlaceholderConfig = Object.values(firebaseConfig).some(v => String(v).includes("REPLACE_ME"));
+const isFileProtocol = location.protocol === "file:";
+
+if(isPlaceholderConfig){
+  showSetupWarning("Palitan muna ang <b>firebaseConfig</b> sa itaas ng script<br>(Firebase Console → Project Settings → SDK setup)<br>bago i-open ang app na ito.");
+} else if(isFileProtocol){
+  showSetupWarning("I-upload muna ang file na ito sa GitHub Pages o Netlify.<br>Hindi gagana ang Firebase kapag binuksan lang<br>diretso mula sa file (file://).");
+} else {
+  try{
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    // IMPORTANT (lesson learned from the pharmacy trackers): enable
+    // offline persistence BEFORE any reads, and never gate first-run
+    // logic behind a plain .get() — always resolve it inside the
+    // first onSnapshot callback, or a "client is offline" error can
+    // fire even while connected.
+    db.enablePersistence({ synchronizeTabs: true }).catch(err => {
+      console.warn("Persistence not enabled:", err.code); // e.g. multiple tabs open
+    });
+  }catch(err){
+    console.error(err);
+    showSetupWarning("Hindi na-load ang Firebase: " + (err && err.message ? err.message : "unknown error") + "<br>Suriin ang firebaseConfig values.");
+  }
+}
+
+/* ==========================================================
+   2. CATEGORIES
+   ========================================================== */
+const CATEGORIES = [
+  { id: "food",      label: "Food & Groceries",      icon: "🍽️" },
+  { id: "transport",  label: "Transportation",        icon: "🚗" },
+  { id: "bills",      label: "Bills & Utilities",     icon: "💡", hasFrequency: true },
+  { id: "household",  label: "Household",             icon: "🏠" },
+  { id: "health",     label: "Health & Personal Care",icon: "💊" },
+  { id: "family",     label: "Kids/Family",           icon: "👨‍👩‍👧" },
+  { id: "shopping",   label: "Shopping/Personal",     icon: "🛍️" },
+  { id: "savings",    label: "Savings/Investments",   icon: "💰" },
+  { id: "misc",       label: "Others/Misc",           icon: "📦" }
+];
+const FREQ_LABEL = { onetime:"", monthly:"Monthly", quarterly:"Quarterly", semiannual:"Semi-Annual", annual:"Annual" };
+
+function fmtMoney(n){
+  return "₱" + Number(n||0).toLocaleString("en-PH", {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function todayStr(){
+  const d = new Date();
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+}
+
+/* ==========================================================
+   3. PIN LOCK
+   Stored in Firestore (not localStorage) so the SAME pin works
+   on any phone/browser Joan opens this on.
+   ========================================================== */
+let pinDoc = null;       // { pin: "1234" } once loaded
+let pinBuffer = "";
+let pinMode = "loading";  // loading | create | confirm | verify
+let firstPinEntry = "";
+
+const pinDots = document.getElementById("pinDots");
+const pinTitle = document.getElementById("pinTitle");
+const pinError = document.getElementById("pinError");
+const keypad = document.getElementById("keypad");
+
+function buildKeypad(){
+  const keys = ["1","2","3","4","5","6","7","8","9","","0","⌫"];
+  keypad.innerHTML = "";
+  keys.forEach(k=>{
+    const btn = document.createElement("button");
+    if(k===""){ btn.className="ghost"; btn.disabled = true; }
+    else{
+      btn.textContent = k;
+      btn.onclick = ()=> handlePinKey(k);
+    }
+    keypad.appendChild(btn);
+  });
+}
+buildKeypad();
+
+function renderPinDots(){
+  pinDots.innerHTML = "";
+  for(let i=0;i<4;i++){
+    const d = document.createElement("div");
+    d.className = "pin-dot" + (i < pinBuffer.length ? " filled" : "");
+    pinDots.appendChild(d);
+  }
+}
+
+function handlePinKey(k){
+  pinError.textContent = "";
+  if(k==="⌫"){ pinBuffer = pinBuffer.slice(0,-1); renderPinDots(); return; }
+  if(pinBuffer.length>=4) return;
+  pinBuffer += k;
+  renderPinDots();
+  if(pinBuffer.length===4) setTimeout(submitPin, 150);
+}
+
+function submitPin(){
+  if(pinMode==="create"){
+    firstPinEntry = pinBuffer;
+    pinBuffer = "";
+    pinMode = "confirm";
+    pinTitle.textContent = "Confirm your PIN";
+    renderPinDots();
+    return;
+  }
+  if(pinMode==="confirm"){
+    if(pinBuffer !== firstPinEntry){
+      pinError.textContent = "PINs didn't match. Try again.";
+      pinBuffer = ""; firstPinEntry = ""; pinMode = "create";
+      pinTitle.textContent = "Create your PIN";
+      renderPinDots();
+      return;
+    }
+    // Save new PIN to Firestore
+    db.doc(SETTINGS_DOC).set({ pin: pinBuffer, updatedAt: Date.now() })
+      .then(unlockApp)
+      .catch(()=>{ pinError.textContent = "Couldn't save PIN. Check your connection."; pinBuffer=""; renderPinDots(); });
+    return;
+  }
+  if(pinMode==="verify"){
+    if(pinBuffer === pinDoc.pin){
+      unlockApp();
+    } else {
+      pinError.textContent = "Wrong PIN.";
+      pinBuffer = "";
+      renderPinDots();
+    }
+  }
+}
+
+function unlockApp(){
+  document.getElementById("pinScreen").style.display = "none";
+  document.getElementById("app").style.display = "flex";
+  initTrackerUI();
+}
+
+// Load (or create) the PIN once, via onSnapshot per the offline-safe pattern.
+// Wrapped with auto-retry: Firestore's first listener attempt can fire a
+// transient "unavailable" error while offline persistence is still
+// initializing, even though the connection is actually fine — without a
+// retry, that one-time error leaves the screen stuck permanently.
+let pinLoaded = false;
+let pinRetryCount = 0;
+function startPinListener(){
+  if(!db) return;
+  db.doc(SETTINGS_DOC).onSnapshot(snap=>{
+    if(pinLoaded) return;      // only handle the very first resolution
+    pinLoaded = true;
+    pinError.textContent = "";
+    if(snap.exists){
+      pinDoc = snap.data();
+      pinMode = "verify";
+      pinTitle.textContent = "Enter PIN";
+    } else {
+      pinMode = "create";
+      pinTitle.textContent = "Create your PIN";
+      document.getElementById("pinSub").textContent = "This keeps your tracker private";
+    }
+    renderPinDots();
+  }, err=>{
+    console.warn("PIN listener error:", err);
+    if(pinRetryCount < 5){
+      pinRetryCount++;
+      pinError.textContent = "Connecting...";
+      setTimeout(startPinListener, 1200);
+    } else {
+      pinError.textContent = "Connect to the internet once to set up.";
+    }
+  });
+}
+if(db){
+  // give enablePersistence a moment to settle first, then start listening;
+  // startPinListener also retries on its own if it still races.
+  Promise.resolve().then(startPinListener);
+}
+
+
+/* ==========================================================
+   4. MAIN TRACKER UI
+   ========================================================== */
+let allEntries = [];
+let selectedType = "expense";
+let selectedCategory = "food";
+let receiptDataUrl = null;
+let saving = false;
+
+function initTrackerUI(){
+  // Category grid inside the add-entry sheet
+  const grid = document.getElementById("catGrid");
+  grid.innerHTML = "";
+  CATEGORIES.forEach(c=>{
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "cat-btn" + (c.id===selectedCategory ? " selected" : "");
+    b.innerHTML = `<span class="ic">${c.icon}</span>${c.label}`;
+    b.onclick = ()=>{ selectedCategory = c.id; refreshCatGrid(); refreshFrequencyField(); };
+    b.dataset.id = c.id;
+    grid.appendChild(b);
+  });
+  document.getElementById("dateInput").value = todayStr();
+
+  listenForEntries();
+}
+
+function refreshCatGrid(){
+  document.querySelectorAll(".cat-btn").forEach(b=>{
+    b.classList.toggle("selected", b.dataset.id === selectedCategory);
+  });
+}
+function refreshFrequencyField(){
+  const cat = CATEGORIES.find(c=>c.id===selectedCategory);
+  document.getElementById("frequencyField").style.display = (cat && cat.hasFrequency) ? "block" : "none";
+}
+
+// -------- Live data + connection status --------
+let entriesRetryCount = 0;
+function listenForEntries(){
+  db.collection(COLLECTION).orderBy("timestamp","desc").onSnapshot(snap=>{
+    entriesRetryCount = 0;
+    allEntries = snap.docs.map(d=>({ id:d.id, ...d.data() }));
+    setStatus(true);
+    render();
+  }, err=>{
+    console.warn(err);
+    setStatus(false);
+    render(); // still render from local cache
+    // same transient-race safety net as the PIN listener above
+    if(entriesRetryCount < 5){
+      entriesRetryCount++;
+      setTimeout(listenForEntries, 1200);
+    }
+  });
+}
+window.addEventListener("online", ()=> setStatus(true));
+window.addEventListener("offline", ()=> setStatus(false));
+function setStatus(online){
+  const badge = document.getElementById("statusBadge");
+  badge.textContent = online ? "Online" : "Offline (saved locally)";
+  badge.classList.toggle("offline", !online);
+}
+
+// -------- Rendering --------
+function render(){
+  renderSummary();
+  renderCategoryBreakdown();
+  renderEntriesList();
+}
+
+function renderSummary(){
+  const now = new Date();
+  const startOfWeek = new Date(now); startOfWeek.setDate(now.getDate() - now.getDay()); startOfWeek.setHours(0,0,0,0);
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  let balance=0, today=0, week=0, month=0;
+
+  allEntries.forEach(e=>{
+    const amt = Number(e.amount)||0;
+    const d = new Date(e.date + "T00:00:00");
+    const signed = e.type==="income" ? amt : -amt;
+    balance += signed;
+    if(e.type==="expense"){
+      if(e.date === todayStr()) today += amt;
+      if(d >= startOfWeek) week += amt;
+      if(d >= startOfMonth) month += amt;
+    }
+  });
+
+  document.getElementById("balanceAmount").textContent = fmtMoney(balance);
+  document.getElementById("todayTotal").textContent = fmtMoney(today);
+  document.getElementById("weekTotal").textContent = fmtMoney(week);
+  document.getElementById("monthTotal").textContent = fmtMoney(month);
+}
+
+function renderCategoryBreakdown(){
+  const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const totals = {};
+  let max = 0;
+  allEntries.forEach(e=>{
+    if(e.type!=="expense") return;
+    const d = new Date(e.date + "T00:00:00");
+    if(d < startOfMonth) return;
+    totals[e.category] = (totals[e.category]||0) + Number(e.amount||0);
+    if(totals[e.category] > max) max = totals[e.category];
+  });
+  const box = document.getElementById("categoryBreakdown");
+  const cats = CATEGORIES.filter(c=>totals[c.id]);
+  if(cats.length===0){ box.innerHTML = '<div class="empty-state">No expenses yet this month.</div>'; return; }
+  box.innerHTML = cats
+    .sort((a,b)=>totals[b.id]-totals[a.id])
+    .map(c=>`
+      <div class="cat-row">
+        <span class="icon">${c.icon}</span>
+        <span class="name">${c.label}</span>
+        <span class="amt">${fmtMoney(totals[c.id])}</span>
+      </div>
+      <div class="bar-bg"><div class="bar-fill" style="width:${max? (totals[c.id]/max*100):0}%"></div></div>
+    `).join("");
+}
+
+function renderEntriesList(){
+  const box = document.getElementById("entriesList");
+  if(allEntries.length===0){ box.innerHTML = '<div class="empty-state">No entries yet. Tap + to add your first one.</div>'; return; }
+
+  // group by date
+  const groups = {};
+  allEntries.forEach(e=>{ (groups[e.date] = groups[e.date] || []).push(e); });
+  const dates = Object.keys(groups).sort((a,b)=> b.localeCompare(a));
+
+  box.innerHTML = dates.map(date=>{
+    const label = date === todayStr() ? "Today" : new Date(date+"T00:00:00").toLocaleDateString("en-PH",{weekday:"short",month:"short",day:"numeric"});
+    const rows = groups[date].map(e=>{
+      const cat = CATEGORIES.find(c=>c.id===e.category);
+      const icon = e.type==="income" ? "💵" : (cat ? cat.icon : "📦");
+      const name = e.type==="income" ? "Income" : (cat ? cat.label : "Other");
+      const freqBadge = (e.frequency && FREQ_LABEL[e.frequency]) ? `<span class="badge">${FREQ_LABEL[e.frequency]}</span>` : "";
+      const receipt = e.receipt ? `<img class="receipt-thumb" src="${e.receipt}" onclick="viewReceipt('${e.id}')">` : "";
+      return `
+        <div class="entry">
+          <div class="icon">${icon}</div>
+          <div class="info">
+            <div class="cat">${name}${freqBadge}</div>
+            <div class="note">${e.note || ""}</div>
+          </div>
+          ${receipt}
+          <div class="amt ${e.type}">${e.type==="income"?"+":"-"}${fmtMoney(e.amount)}</div>
+        </div>`;
+    }).join("");
+    return `<div class="date-heading">${label}</div><div class="card">${rows}</div>`;
+  }).join("");
+}
+
+function viewReceipt(id){
+  const e = allEntries.find(x=>x.id===id);
+  if(e && e.receipt){ window.open(e.receipt, "_blank"); }
+}
+
+/* ==========================================================
+   5. ADD-ENTRY SHEET
+   ========================================================== */
+const overlay = document.getElementById("overlay");
+const sheet = document.getElementById("sheet");
+
+document.getElementById("fab").onclick = openSheet;
+document.getElementById("cancelBtn").onclick = closeSheet;
+overlay.onclick = closeSheet;
+
+function openSheet(){
+  selectedType = "expense";
+  selectedCategory = "food";
+  receiptDataUrl = null;
+  document.getElementById("amountInput").value = "";
+  document.getElementById("noteInput").value = "";
+  document.getElementById("dateInput").value = todayStr();
+  document.getElementById("receiptInput").value = "";
+  document.getElementById("receiptPreview").style.display = "none";
+  document.getElementById("receiptHint").textContent = "";
+  document.getElementById("frequencySelect").value = "onetime";
+  setType("expense");
+  refreshCatGrid();
+  refreshFrequencyField();
+  overlay.classList.add("show");
+  sheet.classList.add("show");
+}
+function closeSheet(){
+  overlay.classList.remove("show");
+  sheet.classList.remove("show");
+}
+
+function setType(t){
+  selectedType = t;
+  document.getElementById("typeExpense").classList.toggle("active", t==="expense");
+  document.getElementById("typeIncome").classList.toggle("active", t==="income");
+  document.getElementById("categoryField").style.display = t==="expense" ? "block" : "none";
+  refreshFrequencyField();
+}
+document.getElementById("typeExpense").onclick = ()=> setType("expense");
+document.getElementById("typeIncome").onclick = ()=> setType("income");
+
+// -------- Receipt photo: capture + compress so it never blows
+// past Firestore's ~1MB document limit (root cause of the
+// "attachment failed" errors seen before). --------
+document.getElementById("receiptInput").onchange = async (ev)=>{
+  const file = ev.target.files[0];
+  if(!file) return;
+  document.getElementById("receiptHint").textContent = "Processing photo...";
+  try{
+    receiptDataUrl = await compressImage(file);
+    const preview = document.getElementById("receiptPreview");
+    preview.src = receiptDataUrl;
+    preview.style.display = "block";
+    document.getElementById("receiptHint").textContent = `Ready (${Math.round(receiptDataUrl.length/1024)} KB)`;
+  }catch(err){
+    console.error(err);
+    receiptDataUrl = null;
+    document.getElementById("receiptHint").textContent = "Couldn't process that photo — try another one.";
+  }
+};
+
+function renderToDataUrl(file, maxWidth, quality){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = e=>{
+      const img = new Image();
+      img.onload = ()=>{
+        let w = img.width, h = img.height;
+        if(w > maxWidth){ h = Math.round(h * (maxWidth / w)); w = maxWidth; }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function compressImage(file){
+  let quality = 0.7, maxWidth = 900;
+  let dataUrl = await renderToDataUrl(file, maxWidth, quality);
+  // keep shrinking until safely under Firestore's 1MB/doc limit
+  while(dataUrl.length > 650000 && quality > 0.3){
+    quality -= 0.15;
+    dataUrl = await renderToDataUrl(file, maxWidth, quality);
+  }
+  if(dataUrl.length > 800000){
+    dataUrl = await renderToDataUrl(file, 600, 0.5);
+  }
+  if(dataUrl.length > 800000){
+    throw new Error("Photo still too large after compression");
+  }
+  return dataUrl;
+}
+
+// -------- Save --------
+document.getElementById("saveBtn").onclick = async ()=>{
+  if(saving) return; // guards against double-tap duplicate saves
+  const amount = parseFloat(document.getElementById("amountInput").value);
+  if(!amount || amount <= 0){ showToast("Enter a valid amount"); return; }
+  const date = document.getElementById("dateInput").value || todayStr();
+  const note = document.getElementById("noteInput").value.trim();
+
+  const entry = {
+    type: selectedType,
+    amount: amount,
+    date: date,
+    note: note,
+    timestamp: Date.now()
+  };
+  if(selectedType==="expense"){
+    entry.category = selectedCategory;
+    const cat = CATEGORIES.find(c=>c.id===selectedCategory);
+    if(cat && cat.hasFrequency){
+      entry.frequency = document.getElementById("frequencySelect").value;
+    }
+  }
+  if(receiptDataUrl) entry.receipt = receiptDataUrl;
+
+  saving = true;
+  const btn = document.getElementById("saveBtn");
+  btn.disabled = true; btn.textContent = "Saving...";
+
+  try{
+    await db.collection(COLLECTION).add(entry);
+    // Note: this still resolves instantly even offline — Firestore
+    // queues it locally and auto-syncs once back online.
+    closeSheet();
+    showToast(navigator.onLine ? "Saved" : "Saved offline — will sync later");
+  }catch(err){
+    console.error(err);
+    showToast("Couldn't save. Please try again.");
+  }finally{
+    saving = false;
+    btn.disabled = false; btn.textContent = "Save Entry";
+  }
+};
+
+function showToast(msg){
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(()=> t.classList.remove("show"), 2200);
+}
+
+/* ==========================================================
+   6. PWA: installable icon + manifest (generated at runtime,
+   no extra files needed — keeps this a true single-file app)
+   ========================================================== */
+function generateIcon(size){
+  const canvas = document.createElement("canvas");
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#6d28d9";
+  ctx.fillRect(0,0,size,size);
+  ctx.fillStyle = "#fff";
+  ctx.font = `bold ${size*0.55}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("₱", size/2, size/2 + size*0.03);
+  return canvas.toDataURL("image/png");
+}
+const icon192 = generateIcon(192);
+const icon512 = generateIcon(512);
+const manifest = {
+  name: "My Expenses",
+  short_name: "My Expenses",
+  start_url: ".",
+  display: "standalone",
+  background_color: "#f8f6fc",
+  theme_color: "#6d28d9",
+  icons: [
+    { src: icon192, sizes: "192x192", type: "image/png" },
+    { src: icon512, sizes: "512x512", type: "image/png" }
+  ]
+};
+document.getElementById("manifestLink").href = URL.createObjectURL(new Blob([JSON.stringify(manifest)], {type:"application/json"}));
+document.getElementById("appleIcon").href = icon192;
+
+// Best-effort offline app-shell caching so the page itself still
+// opens with no signal (the data layer above already works offline
+// via Firestore persistence regardless of this).
+if("serviceWorker" in navigator){
+  const swSource = `
+    self.addEventListener("install", e => self.skipWaiting());
+    self.addEventListener("activate", e => self.clients.claim());
+    self.addEventListener("fetch", e => {
+      e.respondWith(
+        caches.open("my-expenses-shell-v1").then(cache =>
+          fetch(e.request).then(res => { cache.put(e.request, res.clone()); return res; })
+            .catch(() => cache.match(e.request))
+        )
+      );
+    });
+  `;
+  const swBlob = new Blob([swSource], {type:"application/javascript"});
+  navigator.serviceWorker.register(URL.createObjectURL(swBlob)).catch(()=>{ /* non-critical */ });
+}
+</script>
+</body>
+</html>
